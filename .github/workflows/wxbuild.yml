@@ -1,0 +1,101 @@
+name: alsyundawy Build wxPython
+
+on:
+  push:
+    paths-ignore:
+      - 'docs/**'
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build wxPython (Intel)
+    runs-on: macos-15-intel          # x86_64 / Intel (pengganti macos-13 yang sudah retired)
+    timeout-minutes: 90
+    permissions:
+      contents: write
+
+    env:
+      branch: ${{ github.ref }}
+      commiturl: ${{ github.event.head_commit.url || github.event.release.html_url }}
+      commitdate: ${{ github.event.head_commit.timestamp || github.event.release.published_at }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          architecture: x64            # pastikan x86_64
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+          # Force universal2 charset-normalizer (opsional, bagus untuk binary)
+          python3 -m pip uninstall -y charset-normalizer || true
+          python3 -m pip download --platform macosx_10_9_universal2 --only-binary=:all: charset-normalizer
+          python3 -m pip install charset_normalizer-*-macosx_10_9_universal2.whl || true
+
+      - name: Prepare Assets (--prepare-assets)
+        run: >
+          python3 Build-Project.command
+          --run-as-individual-steps
+          --reset-dmg-cache
+          --prepare-assets
+
+      - name: Prepare Application (--prepare-application)
+        run: >
+          python3 Build-Project.command
+          --git-branch "${{ env.branch }}"
+          --git-commit-url "${{ env.commiturl }}"
+          --git-commit-date "${{ env.commitdate }}"
+          --reset-pyinstaller-cache
+          --run-as-individual-steps
+          --prepare-application
+        # Tidak kirim signing/notarization identity → script skip signing (cocok untuk fork)
+
+      - name: Prepare Package (--prepare-package)
+        run: >
+          python3 Build-Project.command
+          --run-as-individual-steps
+          --prepare-package
+
+      - name: Upload AutoPkg Package
+        uses: actions/upload-artifact@v7
+        with:
+          name: AutoPkg-Assets.pkg
+          path: ./dist/AutoPkg-Assets.pkg
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Installation Package
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenCore-Patcher.pkg
+          path: ./dist/OpenCore-Patcher.pkg
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload Uninstaller Package
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenCore-Patcher-Uninstaller.pkg
+          path: ./dist/OpenCore-Patcher-Uninstaller.pkg
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload packages to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ./dist/AutoPkg-Assets.pkg
+            ./dist/OpenCore-Patcher.pkg
+            ./dist/OpenCore-Patcher-Uninstaller.pkg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
