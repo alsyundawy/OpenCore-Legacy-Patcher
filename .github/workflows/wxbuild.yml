@@ -8,69 +8,96 @@ on:
   release:
     types: [published]
 
+concurrency:
+  group: wxbuild-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PIP_NO_INPUT: '1'
+
 jobs:
   build:
     name: Build wxPython (Intel)
-    runs-on: macos-15         # x86_64 / Intel (pengganti macos-13 yang sudah retired)
+    runs-on: macos-15-intel
     timeout-minutes: 90
     permissions:
       contents: write
 
-    env:
-      branch: ${{ github.ref }}
-      commiturl: ${{ github.event.head_commit.url || github.event.release.html_url }}
-      commitdate: ${{ github.event.head_commit.timestamp || github.event.release.published_at }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.11 x86_64
         uses: actions/setup-python@v7
         with:
           python-version: '3.11'
-          architecture: x64            # pastikan x86_64
-          cache: 'pip'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Verify build architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test "$(python3 -c 'import platform; print(platform.machine())')" = x86_64
+          python3 -c 'import platform, sys; print(platform.platform()); print(sys.executable)'
 
       - name: Install dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           python3 -m pip install --upgrade pip
           python3 -m pip install -r requirements.txt
-          # Force universal2 charset-normalizer (opsional, bagus untuk binary)
-          python3 -m pip uninstall -y charset-normalizer || true
-          python3 -m pip download --platform macosx_10_9_universal2 --only-binary=:all: charset-normalizer
-          python3 -m pip install charset_normalizer-*-macosx_10_9_universal2.whl || true
+          python3 -m pip check
+          python3 -c 'import wx._adv; print(wx._adv.__file__)'
+          file "$(python3 -c 'import wx._adv; print(wx._adv.__file__)')"
 
-      - name: Prepare Assets (--prepare-assets)
-        run: >
-          python3 Build-Project.command
-          --run-as-individual-steps
-          --reset-dmg-cache
-          --prepare-assets
+      - name: Prepare Assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Build-Project.command \
+            --run-as-individual-steps \
+            --reset-dmg-cache \
+            --prepare-assets
 
-      - name: Prepare Application (--prepare-application)
-        run: >
-          python3 Build-Project.command
-          --git-branch "${{ env.branch }}"
-          --git-commit-url "${{ env.commiturl }}"
-          --git-commit-date "${{ env.commitdate }}"
-          --reset-pyinstaller-cache
-          --run-as-individual-steps
-          --prepare-application
-        # Tidak kirim signing/notarization identity → script skip signing (cocok untuk fork)
+      - name: Prepare Application
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: |
+          set -euo pipefail
+          COMMIT_DATE="$(git log -1 --format=%cI)"
+          python3 Build-Project.command \
+            --git-branch "${BRANCH}" \
+            --git-commit-url "${COMMIT_URL}" \
+            --git-commit-date "${COMMIT_DATE}" \
+            --reset-pyinstaller-cache \
+            --run-as-individual-steps \
+            --prepare-application
 
-      - name: Prepare Package (--prepare-package)
-        run: >
-          python3 Build-Project.command
-          --run-as-individual-steps
-          --prepare-package
+      - name: Prepare Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Build-Project.command \
+            --run-as-individual-steps \
+            --prepare-package
 
       - name: Upload AutoPkg Package
         uses: actions/upload-artifact@v7
         with:
           name: AutoPkg-Assets.pkg
           path: ./dist/AutoPkg-Assets.pkg
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
       - name: Upload Installation Package
@@ -78,7 +105,7 @@ jobs:
         with:
           name: OpenCore-Patcher.pkg
           path: ./dist/OpenCore-Patcher.pkg
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
       - name: Upload Uninstaller Package
@@ -86,7 +113,7 @@ jobs:
         with:
           name: OpenCore-Patcher-Uninstaller.pkg
           path: ./dist/OpenCore-Patcher-Uninstaller.pkg
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
       - name: Upload packages to GitHub Release
