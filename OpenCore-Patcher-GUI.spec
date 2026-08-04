@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 block_cipher = None
+datas = []
 
 a = Analysis(['OpenCore-Patcher-GUI.command'],
     pathex=[],
