@@ -1,0 +1,128 @@
+name: alsyundawy Build wxPython
+
+on:
+  push:
+    paths-ignore:
+      - 'docs/**'
+  workflow_dispatch:
+  release:
+    types: [published]
+
+concurrency:
+  group: wxbuild-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PIP_NO_INPUT: '1'
+
+jobs:
+  build:
+    name: Build wxPython (Intel)
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.11 x86_64
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Verify build architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test "$(python3 -c 'import platform; print(platform.machine())')" = x86_64
+          python3 -c 'import platform, sys; print(platform.platform()); print(sys.executable)'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+          python3 -m pip check
+          python3 -c 'import wx._adv; print(wx._adv.__file__)'
+          file "$(python3 -c 'import wx._adv; print(wx._adv.__file__)')"
+
+      - name: Prepare Assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Build-Project.command \
+            --run-as-individual-steps \
+            --reset-dmg-cache \
+            --prepare-assets
+
+      - name: Prepare Application
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: |
+          set -euo pipefail
+          COMMIT_DATE="$(git log -1 --format=%cI)"
+          python3 Build-Project.command \
+            --git-branch "${BRANCH}" \
+            --git-commit-url "${COMMIT_URL}" \
+            --git-commit-date "${COMMIT_DATE}" \
+            --reset-pyinstaller-cache \
+            --run-as-individual-steps \
+            --prepare-application
+
+      - name: Prepare Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Build-Project.command \
+            --run-as-individual-steps \
+            --prepare-package
+
+      - name: Upload AutoPkg Package
+        uses: actions/upload-artifact@v7
+        with:
+          name: AutoPkg-Assets.pkg
+          path: ./dist/AutoPkg-Assets.pkg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Installation Package
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenCore-Patcher.pkg
+          path: ./dist/OpenCore-Patcher.pkg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Uninstaller Package
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenCore-Patcher-Uninstaller.pkg
+          path: ./dist/OpenCore-Patcher-Uninstaller.pkg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload packages to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ./dist/AutoPkg-Assets.pkg
+            ./dist/OpenCore-Patcher.pkg
+            ./dist/OpenCore-Patcher-Uninstaller.pkg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
